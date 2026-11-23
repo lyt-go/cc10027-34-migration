@@ -283,6 +283,44 @@ class CrossModulePipeline:
         results["duration"] = round(time.time() - started_at, 2)
         return results
 
+    def checkpoint_migration_pipeline(
+        self,
+        source_keys: list[str],
+        *,
+        round_id: str | None = None,
+        fail_after: int | None = None,
+    ) -> dict[str, Any]:
+        """位点存储迁移管道：迁移 -> 成品清单核对 -> 位点核验。
+
+        迁移把每源 JSON 位点与历史 JSONL 记录搬进带版本的数据库；
+        中断时返回已完成的来源和待续传的来源，重跑即可断点续传。
+        """
+        from app.services.checkpoint_router import MigrationInterrupted
+
+        started_at = time.time()
+        results: dict[str, Any] = {"pipeline": "checkpoint_migration", "stages": {}}
+
+        try:
+            migrate_r = self.collect_checkpoint.migrate_to_versioned_store(
+                source_keys, round_id=round_id, fail_after=fail_after
+            )
+            results["stages"]["migrate"] = migrate_r
+            results["round_id"] = migrate_r["round_id"]
+            results["status"] = "confirmed"
+        except MigrationInterrupted as exc:
+            results["stages"]["migrate"] = {"completed": exc.completed}
+            results["round_id"] = exc.round_id
+            results["status"] = "interrupted"
+            results["remaining"] = exc.remaining
+
+        # 成品清单：同一轮迁移里新旧布局并存，清单位移按迁移记录分别定位
+        results["stages"]["manifest"] = self.format_output.get_delivery_manifest(source_keys)
+        # 核对：各源已交付范围一致、历史不丢行、不重复记进度
+        results["stages"]["verify"] = self.collect_checkpoint.verify_positions(source_keys)
+
+        results["duration"] = round(time.time() - started_at, 2)
+        return results
+
     def run_all_pipelines(self) -> dict[str, Any]:
         """运行所有管道组合。"""
         started_at = time.time()

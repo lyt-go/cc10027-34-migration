@@ -87,11 +87,25 @@ class FormatOutputService(BaseModuleService):
         return {"total": total, "sources": len(results), "details": results}
 
     def get_export_manifest(self, source_key: str) -> dict[str, Any]:
-        """获取指定日志源的导出清单。"""
+        """获取指定日志源的导出清单。
+
+        位点按迁移路由读取（已确认的来源来自带版本的数据库，其余来自旧
+        JSON 位点），并附上可回退的位点存储迁移记录，迁移前后都能核对
+        该源已经交付的范围。
+        """
         cp = self._read_checkpoint(f"{source_key}_export")
         mapped_cp = self._read_checkpoint(f"{source_key}_map")
         parsed_cp = self._read_checkpoint(f"{source_key}_parse")
         collect_cp = self._read_checkpoint(source_key)
+
+        migration = self._checkpoint_router.latest_record(source_key)
+        delivered_range = None
+        if collect_cp:
+            delivered_range = {
+                "start_line": 0,
+                "end_line": collect_cp.get("line_number", 0),
+                "offset": collect_cp.get("offset", 0),
+            }
 
         return {
             "source_key": source_key,
@@ -99,4 +113,24 @@ class FormatOutputService(BaseModuleService):
             "parse": parsed_cp,
             "mapping": mapped_cp,
             "export": cp,
+            "position_storage": self._checkpoint_router.storage_for(source_key),
+            "migration": migration,
+            "delivered_range": delivered_range,
+        }
+
+    def get_delivery_manifest(self, source_keys: list[str]) -> dict[str, Any]:
+        """成品清单：一次读取多个来源的位点。
+
+        同一轮迁移里新旧布局并存（A 已写新布局、B 还在追加旧记录），
+        清单按迁移记录分别定位各源匹配的采集输入，保证迁移前后都能
+        核对已经交付的来源范围。
+        """
+        entries = [self.get_export_manifest(key) for key in source_keys]
+        return {
+            "generated_at": time.time(),
+            "total": len(entries),
+            "on_versioned_db": sum(
+                1 for e in entries if e["position_storage"] == "versioned_db"
+            ),
+            "sources": entries,
         }

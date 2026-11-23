@@ -26,6 +26,14 @@ class BaseModuleService:
     ACTION_RULES: dict[str, str] = {}
     NEGATIVE_ACTIONS: list[str] = []
 
+    def __init__(self, checkpoint_router: Any = None) -> None:
+        # 位点存储路由：已确认迁移的来源读写走带版本的数据库，
+        # 其余来源继续走旧的每源 JSON 位点文件。
+        if checkpoint_router is None:
+            from app.services.checkpoint_router import default_checkpoint_router
+            checkpoint_router = default_checkpoint_router()
+        self._checkpoint_router = checkpoint_router
+
     # -- 基础 CRUD --
 
     def list_entries(
@@ -130,19 +138,15 @@ class BaseModuleService:
         return records
 
     def _write_checkpoint(self, name: str, state: dict[str, Any]) -> Path:
-        p = self._data_dir("checkpoints")
-        cp_file = p / f"{name}.json"
         state["_updated_at"] = time.time()
-        with open(cp_file, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2, default=str)
-        return cp_file
+        return self._checkpoint_router.write(name, state)
 
     def _read_checkpoint(self, name: str) -> dict[str, Any] | None:
-        cp_file = self._data_dir("checkpoints") / f"{name}.json"
-        if not cp_file.exists():
-            return None
-        with open(cp_file, "r", encoding="utf-8") as f:
-            return json.load(f)
+        return self._checkpoint_router.read(name)
+
+    def _append_checkpoint_history(self, source_key: str, entry: dict[str, Any]) -> None:
+        """追加采集历史：按迁移路由进新库或旧 JSONL，保证不重复记进度。"""
+        self._checkpoint_router.append_history(source_key, entry)
 
     def _compute_checksum(self, content: str) -> str:
         return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]

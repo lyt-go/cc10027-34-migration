@@ -29,11 +29,10 @@ class CollectCheckpointService(BaseModuleService):
         }
         self._write_checkpoint(source_key, state)
 
-        ckpt_dir = self._data_dir("checkpoints")
-        self._write_jsonl(ckpt_dir / "checkpoint_history.jsonl", [{
+        self._append_checkpoint_history(source_key, {
             "source_key": source_key, "offset": offset,
             "line_number": line_number, "at": time.time(), "action": "save",
-        }])
+        })
         return state
 
     def rollback_to(self, source_key: str, to_offset: int) -> dict[str, Any]:
@@ -48,9 +47,9 @@ class CollectCheckpointService(BaseModuleService):
         cp["previous_offset"] = cp.get("previous_offset", cp["offset"])
         self._write_checkpoint(source_key, cp)
 
-        self._write_jsonl(self._data_dir("checkpoints") / "checkpoint_history.jsonl", [{
+        self._append_checkpoint_history(source_key, {
             "source_key": source_key, "offset": to_offset, "at": time.time(), "action": "rollback",
-        }])
+        })
         return cp
 
     def get_checkpoint_state(self, source_key: str) -> dict[str, Any]:
@@ -80,10 +79,10 @@ class CollectCheckpointService(BaseModuleService):
         self._write_checkpoint(source_key, cp)
 
         # 写入位点历史
-        self._write_jsonl(self._data_dir("checkpoints") / "checkpoint_history.jsonl", [{
+        self._append_checkpoint_history(source_key, {
             "source_key": source_key, "offset": cp.get("offset", 0),
             "at": time.time(), "action": "commit",
-        }])
+        })
 
         result = {
             "source_key": source_key,
@@ -115,3 +114,38 @@ class CollectCheckpointService(BaseModuleService):
         self._write_checkpoint(source_key, cp)
 
         return {"source_key": source_key, "match": match, "expected": expected_checksum, "actual": actual}
+
+    # -- 位点存储迁移：旧 JSON 布局 -> 带版本的数据库（可回退） --
+
+    def migrate_to_versioned_store(
+        self,
+        source_keys: list[str],
+        *,
+        round_id: str | None = None,
+        fail_after: int | None = None,
+    ) -> dict[str, Any]:
+        """把每源 JSON 位点与历史 JSONL 采集记录迁移到带版本的数据库。
+
+        同一轮可迁移多个来源；单源一个事务，中断后重跑自动续传，
+        已确认的来源跳过、历史按自然键去重，不会重复记进度。
+        """
+        return self._checkpoint_router.migrate_sources(
+            source_keys, round_id=round_id, fail_after=fail_after
+        )
+
+    def rollback_migration(
+        self,
+        *,
+        source_keys: list[str] | None = None,
+        round_id: str | None = None,
+    ) -> dict[str, Any]:
+        """回退迁移：旧读取路径接续新库已确认的采集进度，迁移记录保留可审计。"""
+        return self._checkpoint_router.rollback(source_keys=source_keys, round_id=round_id)
+
+    def migration_records(self, source_key: str | None = None) -> list[dict[str, Any]]:
+        """可回退的位点存储迁移记录：存量原值与新库确认范围的关联。"""
+        return self._checkpoint_router.records(source_key)
+
+    def verify_positions(self, source_keys: list[str]) -> dict[str, Any]:
+        """核对各源已交付范围：位点一致、历史不丢行、不重复记进度。"""
+        return self._checkpoint_router.verify(source_keys)

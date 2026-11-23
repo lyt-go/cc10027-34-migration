@@ -149,6 +149,33 @@ def run_agent_checkpoint_pipeline(agent_code: str) -> dict[str, Any]:
     return pipeline.agent_checkpoint_pipeline(agent_code)
 
 
+@router.post("/pipelines/checkpoint-migration/migrate")
+def run_checkpoint_migration(
+    source_keys: str = Query(...),
+    round_id: str | None = Query(default=None),
+    fail_after: int | None = Query(default=None),
+) -> dict[str, Any]:
+    """位点存储迁移管道：每源 JSON 位点 + 历史 JSONL -> 带版本的数据库。"""
+    keys = [k.strip() for k in source_keys.split(",") if k.strip()]
+    return pipeline.checkpoint_migration_pipeline(keys, round_id=round_id, fail_after=fail_after)
+
+
+@router.post("/pipelines/checkpoint-migration/rollback")
+def rollback_checkpoint_migration(
+    source_keys: str = Query(default=""),
+    round_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """回退位点存储迁移：旧读取路径接续新库已确认的采集进度。"""
+    keys = [k.strip() for k in source_keys.split(",") if k.strip()] or None
+    return pipeline.collect_checkpoint.rollback_migration(source_keys=keys, round_id=round_id)
+
+
+@router.post("/pipelines/checkpoint-migration/records")
+def checkpoint_migration_records(source_key: str | None = Query(default=None)) -> dict[str, Any]:
+    """可回退的位点存储迁移记录：存量原值与新库确认范围的关联。"""
+    return {"records": pipeline.collect_checkpoint.migration_records(source_key)}
+
+
 @router.post("/pipelines/run-all")
 def run_all_pipelines() -> dict[str, Any]:
     """运行所有管道组合。"""

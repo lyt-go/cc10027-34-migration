@@ -77,5 +77,33 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 位点存储迁移（可回退）
+
+采集位点支持从旧的每源 JSON 位点 + `checkpoint_history.jsonl` 历史记录，
+迁移到带版本的数据库（`data/checkpoints/checkpoint_store.db`，SQLite，
+`schema_migrations` 表逐版应用结构）：
+
+- `app/services/checkpoint_store.py` 带版本的位点数据库：位点、历史、迁移记录三张表。
+- `app/services/checkpoint_router.py` 读写路由：已确认迁移的来源读写走新库，
+  其余来源继续走旧 JSON 布局；同一轮迁移里两种布局并存。
+- 迁移单源一个事务，中断后重跑自动续传；历史按自然键去重，不重复记进度。
+- 回退把新库已确认的位点写回旧读取路径，新布局期间的历史回填旧 JSONL，
+  迁移记录标记已回退但保留（存量原值 ↔ 新库确认范围 ↔ 回退落点可核对）。
+- 格式输出的成品清单按迁移记录定位各源采集输入，迁移前后都可核对已交付范围。
+
+管道接口：
+
+```bash
+# 迁移（fail_after 用于演练中断，重跑即断点续传）
+curl -X POST "http://127.0.0.1:8000/api/pipelines/checkpoint-migration/migrate?source_keys=LOG_-0001,LOG_-0002&round_id=round-1"
+# 回退
+curl -X POST "http://127.0.0.1:8000/api/pipelines/checkpoint-migration/rollback?round_id=round-1"
+# 迁移记录
+curl -X POST "http://127.0.0.1:8000/api/pipelines/checkpoint-migration/records"
+```
+
+测试：`backend/test_checkpoint_migration.py`（迁移、中断续传、混合布局读写、
+回退后旧路径接续、清单核对不丢行不重复）。
+
 领域：数据工程
 子方向：数据采集、爬虫与RPA
